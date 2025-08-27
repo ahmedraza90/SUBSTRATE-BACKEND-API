@@ -1,148 +1,20 @@
 // src/main.rs
 use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
     routing::{get, post},
     Router,
 };
 use log;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
-use subxt::{
-    ext::sp_core::{sr25519::Pair, Pair as PairTrait},
-    tx::PairSigner,
-    utils::AccountId32,
-    OnlineClient, SubstrateConfig,
-};
-use tokio::sync::Mutex;
+use subxt::{OnlineClient, SubstrateConfig};
 use tower_http::cors::CorsLayer;
 
-// Include the generated runtime
-#[subxt::subxt(runtime_metadata_path = "src/metadata.scale")]
-pub mod chain_a {}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DoSomethingRequest {
-    value: u32,
-    signer: Option<String>, // Optional signer, defaults to Alice
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DoSomethingResponse {
-    success: bool,
-    transaction_hash: Option<String>,
-    block_hash: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GetStorageResponse {
-    value: Option<u32>,
-    block_hash: String,
-}
-
-// Updated AppState to include nonce manager
-#[derive(Clone)]
-struct AppState {
-    client: OnlineClient<SubstrateConfig>,
-    nonce_manager: NonceManager,
-}
-
-// Production-grade nonce manager
-#[derive(Clone)]
-pub struct NonceManager {
-    // Track nonces per account using the raw bytes as key
-    nonce_cache: Arc<Mutex<HashMap<[u8; 32], u64>>>,
-    // Keep reference to client for chain queries
-    client: OnlineClient<SubstrateConfig>,
-}
-
-impl NonceManager {
-    pub fn new(client: OnlineClient<SubstrateConfig>) -> Self {
-        Self {
-            nonce_cache: Arc::new(Mutex::new(HashMap::new())),
-            client,
-        }
-    }
-
-    /// Get the next nonce for an account, handling synchronization
-    pub async fn get_next_nonce(
-        &self,
-        account_id: &AccountId32,
-    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        let mut cache = self.nonce_cache.lock().await;
-
-        // Get the account's current nonce from our cache
-        let account_key = account_id.0;
-        let cached_nonce = cache.get(&account_key).copied();
-
-        // Get the chain's current nonce
-        let chain_nonce = self.client.tx().account_nonce(account_id).await?;
-
-        // Determine which nonce to use
-        let nonce_to_use = match cached_nonce {
-            Some(cached) => {
-                // Use whichever is higher: our cached nonce or chain nonce
-                cached.max(chain_nonce)
-            }
-            None => {
-                // First time seeing this account, use chain nonce
-                chain_nonce
-            }
-        };
-
-        // Reserve the next nonce for future transactions
-        cache.insert(account_key, nonce_to_use + 1);
-
-        log::info!(
-            "🔢 Account {:?}: chain_nonce={}, cached_nonce={:?}, using_nonce={}",
-            account_id,
-            chain_nonce,
-            cached_nonce,
-            nonce_to_use
-        );
-
-        Ok(nonce_to_use)
-    }
-
-    /// Reset nonce cache for an account (useful if transaction fails)
-    pub async fn reset_nonce(&self, account_id: &AccountId32, failed_nonce: u64) {
-        let mut cache = self.nonce_cache.lock().await;
-
-        // Reset to the failed nonce so it can be reused
-        cache.insert(account_id.0, failed_nonce);
-
-        log::warn!(
-            "🔄 Reset nonce for account {:?} to {}",
-            account_id,
-            failed_nonce
-        );
-    }
-
-    /// Sync with chain (call periodically to stay in sync)
-    pub async fn sync_with_chain(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut cache = self.nonce_cache.lock().await;
-        // For each account in our cache, check if we're out of sync
-        // For each account in our cache, check if we're out of sync
-        for (account_key, cached_nonce) in cache.iter_mut() {
-            let account_id = AccountId32(*account_key);
-            let chain_nonce = self.client.tx().account_nonce(&account_id).await?;
-
-            // If chain is ahead, update our cache
-            if chain_nonce > *cached_nonce {
-                log::info!(
-                    "📊 Syncing account {:?}: {} -> {}",
-                    account_id,
-                    *cached_nonce,
-                    chain_nonce
-                );
-                *cached_nonce = chain_nonce;
-            }
-        }
-        Ok(())
-    }
-}
+// Import our modules
+mod handlers;
+mod nonce_manager;
+mod transaction;
+use handlers::{
+    do_something_handler, get_latest_events, get_storage_handler, health_check, AppState,
+};
+use nonce_manager::NonceManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -189,251 +61,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn health_check() -> Json<HashMap<String, String>> {
-    let mut response = HashMap::new();
-    response.insert("status".to_string(), "healthy".to_string());
-    response.insert("service".to_string(), "Chain A Backend API".to_string());
-    Json(response)
-}
+// 1. What is AccountId32?
+// pub struct AccountId32(pub [u8; 32]);
+// It’s a tuple struct: a wrapper around a 32-byte array.
+// Inside, the real account identifier is [u8; 32].
 
-async fn do_something_handler(
-    State(state): State<AppState>,
-    Json(payload): Json<DoSomethingRequest>,
-) -> Result<Json<DoSomethingResponse>, StatusCode> {
-    log::info!(
-        "Received do_something request with value: {}",
-        payload.value
-    );
+// nonce_cache: Arc<Mutex<HashMap<[u8; 32], u64>>>,
 
-    // Parse signer (default to Alice if not provided)
-    let signer_seed = payload.signer.unwrap_or_else(|| "//Alice".to_string());
-    let signer = match Pair::from_string(&signer_seed, None) {
-        Ok(pair) => pair,
-        Err(_) => {
-            return Ok(Json(DoSomethingResponse {
-                success: false,
-                transaction_hash: None,
-                block_hash: None,
-                error: Some("Invalid signer".to_string()),
-            }));
-        }
-    };
-    let account_id = AccountId32::from(signer.public());
+// let account_key = account_id.0;
+// let cached_nonce = cache.get(&account_key).copied();  //.copied() converts Option<&u64> to Option<u64> by copying the dereferenced value
+// 2. Why not use AccountId32 directly as the HashMap key?
+// In theory, you can use AccountId32 as a key.
+// But for that, AccountId32 must implement the Eq and Hash traits (because HashMap needs hashing and equality checks for keys).
 
-    // 🎯 Get next nonce using our production nonce manager
-    let nonce = match state.nonce_manager.get_next_nonce(&account_id).await {
-        Ok(nonce) => nonce,
-        Err(e) => {
-            log::error!("❌ Failed to get nonce: {:?}", e);
-            return Ok(Json(DoSomethingResponse {
-                success: false,
-                transaction_hash: None,
-                block_hash: None,
-                error: Some(format!("Failed to get nonce: {:?}", e)),
-            }));
-        }
-    };
-
-    // Create the extrinsic
-    let call = chain_a::tx().template().do_something(payload.value);
-
-    // Wrap the pair in a PairSigner
-    let pair_signer = PairSigner::new(signer);
-
-    // 🔥 THE FIX: Try different approaches based on what's available
-    let signed_tx =
-        match create_signed_transaction_with_nonce(&state.client, &call, &pair_signer, nonce).await
-        {
-            Ok(tx) => tx,
-            Err(e) => {
-                // Reset nonce since we failed to create transaction
-                state.nonce_manager.reset_nonce(&account_id, nonce).await;
-
-                log::error!("❌ Failed to create signed transaction: {:?}", e);
-                return Ok(Json(DoSomethingResponse {
-                    success: false,
-                    transaction_hash: None,
-                    block_hash: None,
-                    error: Some(format!("Failed to create transaction: {:?}", e)),
-                }));
-            }
-        };
-
-    // Submit transaction
-    match signed_tx.submit_and_watch().await {
-        Ok(progress) => {
-            match progress.wait_for_finalized_success().await {
-                Ok(events) => {
-                    let tx_hash = format!("{:?}", events.extrinsic_hash());
-
-                    // Get the block hash from the latest finalized block
-                    let block_hash = match state.client.blocks().at_latest().await {
-                        Ok(block) => format!("{:?}", block.hash()),
-                        Err(_) => "unknown".to_string(),
-                    };
-
-                    log::info!(
-                        "✅ Transaction successful: {} in block {} (nonce: {})",
-                        tx_hash,
-                        block_hash,
-                        nonce
-                    );
-
-                    Ok(Json(DoSomethingResponse {
-                        success: true,
-                        transaction_hash: Some(tx_hash),
-                        block_hash: Some(block_hash),
-                        error: None,
-                    }))
-                }
-
-                Err(e) => {
-                    // Reset nonce for retry
-                    state.nonce_manager.reset_nonce(&account_id, nonce).await;
-
-                    log::error!("❌ Transaction failed during finalization: {:?}", e);
-                    Ok(Json(DoSomethingResponse {
-                        success: false,
-                        transaction_hash: None,
-                        block_hash: None,
-                        error: Some(format!("Transaction failed: {:?}", e)),
-                    }))
-                }
-            }
-        }
-        Err(e) => {
-            // Reset nonce for retry
-            state.nonce_manager.reset_nonce(&account_id, nonce).await;
-
-            log::error!("❌ Failed to submit transaction: {:?}", e);
-            Ok(Json(DoSomethingResponse {
-                success: false,
-                transaction_hash: None,
-                block_hash: None,
-                error: Some(format!("Failed to submit: {:?}", e)),
-            }))
-        }
-    }
-    // Create transaction with explicit nonce to avoid conflicts
-    // Use create_signed_with_nonce for manual nonce management
-    // Submit and watch the transaction
-}
-
-async fn get_storage_handler(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Result<Json<GetStorageResponse>, StatusCode> {
-    // Get the latest finalized block
-    let latest_block = match state.client.blocks().at_latest().await {
-        Ok(block) => block,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
-    // Query the storage
-    let storage_query = chain_a::storage().template().something();
-
-    match latest_block.storage().fetch(&storage_query).await {
-        Ok(value) => Ok(Json(GetStorageResponse {
-            value,
-            block_hash: format!("{:?}", latest_block.hash()),
-        })),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
-}
-
-async fn get_latest_events(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Result<Json<Vec<String>>, StatusCode> {
-    // Get latest finalized block
-    let latest_block = match state.client.blocks().at_latest().await {
-        Ok(block) => block,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
-    // Get events from the block
-    let events = match latest_block.events().await {
-        Ok(events) => events,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
-    let mut event_list = Vec::new();
-
-    // Filter for template pallet events
-    for event in events.iter() {
-        if let Ok(event) = event {
-            if let Ok(template_event) =
-                event.as_event::<chain_a::template::events::SomethingStored>()
-            {
-                if let Some(stored_event) = template_event {
-                    event_list.push(format!(
-                        "SomethingStored: value={}, who={:?}",
-                        stored_event.something, stored_event.who
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(Json(event_list))
-}
-
-// ADD this helper function at the end of your file:
-async fn create_signed_transaction_with_nonce<Call>(
-    client: &OnlineClient<SubstrateConfig>,
-    call: &Call,
-    signer: &PairSigner<SubstrateConfig, Pair>,
-    _nonce: u64, // We'll try to use this but have fallbacks
-) -> Result<
-    subxt::tx::SubmittableExtrinsic<SubstrateConfig, OnlineClient<SubstrateConfig>>,
-    subxt::Error,
->
-where
-    Call: subxt::tx::Payload,
-{
-    log::info!("🔧 Attempting to create signed transaction...");
-
-    // Method 1: Try the original approach (will likely fail but let's try)
-    if let Ok(tx) = try_with_explicit_nonce(client, call, signer, _nonce).await {
-        log::info!("✅ Used explicit nonce method");
-        return Ok(tx);
-    }
-
-    // Method 2: Fallback to default signing (subxt handles nonce internally)
-    log::warn!("⚠️ Explicit nonce failed, using fallback method");
-    match client
-        .tx()
-        .create_signed(call, signer, Default::default())
-        .await
-    {
-        Ok(tx) => {
-            log::info!("✅ Used fallback signing method");
-            Ok(tx)
-        }
-        Err(e) => {
-            log::error!("❌ All signing methods failed: {:?}", e);
-            Err(e)
-        }
-    }
-}
-
-// This will probably fail, but we try it first
-async fn try_with_explicit_nonce<Call>(
-    client: &OnlineClient<SubstrateConfig>,
-    call: &Call,
-    signer: &PairSigner<SubstrateConfig, Pair>,
-    nonce: u64,
-) -> Result<
-    subxt::tx::SubmittableExtrinsic<SubstrateConfig, OnlineClient<SubstrateConfig>>,
-    subxt::Error,
->
-where
-    Call: subxt::tx::Payload,
-{
-    use subxt::config::DefaultExtrinsicParamsBuilder;
-    let params = DefaultExtrinsicParamsBuilder::<SubstrateConfig>::new()
-        .nonce(nonce)
-        .build();
-    return client.tx().create_signed_offline(call, signer, params);
-}
+// If the codebase (or imported library) doesn’t derive Hash/Eq for AccountId32, you can’t directly use it in a HashMap.
+// [u8; 32] already implements Hash, Eq, PartialEq, Clone, Copy, so it’s a convenient key.
 
 // DefaultExtrinsicParams - This is like a "settings package" that contains all the configuration needed for a blockchain transaction (like fees, nonce, mortality, etc.)
 // DefaultExtrinsicParamsBuilder - This is like a "settings builder" that lets you create and customize those settings step by step.
@@ -736,3 +378,50 @@ where
 // ```
 
 // **So yes, you need Mutex because both threads are modifying the same HashMap!**
+
+// .lock().await does this:
+// 1. Waits for the Mutex to be available
+// 2. Locks the Mutex (blocks other threads)
+// 3. Returns a MutexGuard<HashMap<...>>
+
+// The MutexGuard automatically dereferences to HashMap!
+// let mut cache = self.nonce_cache.lock().await;
+// cache is now: MutexGuard<HashMap<[u8; 32], u64>>
+// But it behaves like: &mut HashMap<[u8; 32], u64>
+
+// for (account_key, cached_nonce) in cache.iter_mut() {
+//  ^^^^^^^^^^^^  ^^^^^^^^^^^^^     ^^^^^^^^^^^^^^^
+//  |             |                 |
+//  |             |                 This calls HashMap::iter_mut()
+//  |             |                 Returns iterator over (&K, &mut V)
+//  |             |
+//  |             This is: &mut u64 (mutable reference to value)
+//  |
+//  This is: &[u8; 32] (reference to key)
+// HashMap keys CANNOT be modified because:
+// 1. Keys determine WHERE values are stored (hash bucket)
+// 2. Changing a key would break the HashMap's internal structure
+// 3. You'd need to remove + re-insert to "change" a key
+
+// 🎯 Why Not iter() Instead of iter_mut()?
+// If we used iter() instead of iter_mut():
+// for (account_key, cached_nonce) in cache.iter() {
+// //                 ^^^^^^^^^^^^^
+// //                 This would be &u64 (immutable!)
+
+//     if chain_nonce > *cached_nonce {  // ✅ Reading works
+//         *cached_nonce = chain_nonce;  // ❌ COMPILE ERROR!
+//         //              ^^^^^^^^^^^^
+//         //              Cannot modify through immutable reference!
+//     }
+// }
+
+// Json is an Axum wrapper that:
+// Takes your Rust struct
+// Converts it to JSON automatically
+
+// ❌ Less efficient - creates String even when not needed
+// let signer_seed = payload.signer.unwrap_or("//Alice".to_string());
+
+// ✅ More efficient - only creates String when None
+// let signer_seed = payload.signer.unwrap_or_else(|| "//Alice".to_string());

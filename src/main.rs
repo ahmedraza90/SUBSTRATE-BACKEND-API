@@ -18,6 +18,12 @@ use nonce_manager::NonceManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Force logging level
+    std::env::set_var("RUST_LOG", "info");
+
+    // This line initializes the logging system for your application. Let me explain what it does:
+    // After this line, all log::info!(), log::error!(), etc. will work
+
     env_logger::init();
 
     // Connect to Chain A
@@ -29,11 +35,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start background sync task
     let sync_manager = nonce_manager.clone();
+
+    // This runs on the SAME thread as your main code
+    // But switches back and forth very quickly
+
+    // 🧵 ONE Physical Thread:
+    // ┌─────────────────────────────────────────────────────────────┐
+    // │ Time: 0-10ms   │ Time: 10-20ms │ Time: 20-30ms │ Time: 30-40ms │
+    // │ Main HTTP      │ Background    │ Main HTTP     │ Background    │
+    // │ Request        │ Sync Task     │ Request       │ Sync Task     │
+    // └─────────────────────────────────────────────────────────────┘
     tokio::spawn(async move {
+        // ✅ This is like BUYING a kitchen timer and SETTING it to 30 seconds
+        // ⏰ The timer is now SET UP but hasn't started counting yet
+        // 🚀 This happens INSTANTLY - no waiting involved
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
-            interval.tick().await;
+            // ⏳ This is like PRESSING START on the kitchen timer and WAITING for it to ring
+            // 😴 Your code STOPS HERE and waits...
+            // ⏰ After 30 seconds, the timer "rings" and your code continues
+            interval.tick().await; // ← YIELDS control back to main thread
+                                   //  "I'm waiting, you can do other work"
+
             if let Err(e) = sync_manager.sync_with_chain().await {
+                // ← YIELDS during network I/O
+                // "I'm waiting for network, you handle HTTP"
                 log::error!("🔄 Nonce sync failed: {:?}", e);
             }
         }
@@ -50,12 +76,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/get-storage", get(get_storage_handler))
         .route("/latest-events", get(get_latest_events))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state); // ← This attaches shared state to the router
 
     // Start the server
+    // What it is: A tool that listens for incoming network connections
+    // .bind("127.0.0.1:3001") - Where to Listen
+    // .await: Wait for the listener to be ready
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3001").await?;
     log::info!("Backend API server running on http://127.0.0.1:3001");
 
+    // This line starts your web server and is the final step that makes your API accessible to the world. Let me break it down:
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -69,7 +99,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // nonce_cache: Arc<Mutex<HashMap<[u8; 32], u64>>>,
 
 // let account_key = account_id.0;
-// let cached_nonce = cache.get(&account_key).copied();  //.copied() converts Option<&u64> to Option<u64> by copying the dereferenced value
+// let cached_nonce = cache.get(&account_key).copied();  //.copied() converts Option<&u64> to
+// Option<u64> by copying the dereferenced value
+
 // 2. Why not use AccountId32 directly as the HashMap key?
 // In theory, you can use AccountId32 as a key.
 // But for that, AccountId32 must implement the Eq and Hash traits (because HashMap needs hashing and equality checks for keys).
@@ -155,11 +187,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Example:
 // rusttip_of_asset_id: None,           // Pay with DOT
 // tip_of_asset_id: Some(1234),     // Pay with token #1234 (maybe USDC)
+
 // 2. tip - Base Fee Amount
 // rusttip: u128
 // What it is: The basic fee amount you pay
 // Example:
 // rusttip: 1000000,  // Pay 1,000,000 units (smallest denomination)
+
 // 3. tip_of - Extra Tip Amount
 // rusttip_of: u128
 // What it is: Additional money you pay to get faster processing
@@ -179,11 +213,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //     checkpoint_number: u64,
 //     period: u64,
 // }
+
 // 1. checkpoint_hash - Starting Block ID
 // rustcheckpoint_hash: Hash
 // What it is: The unique ID of the block where your transaction's countdown starts
 // Example:
 // rustcheckpoint_hash: 0x1a2b3c4d...  // Block #1000's unique ID
+
 // 2. checkpoint_number - Starting Block Number
 // rustcheckpoint_number: u64
 // What it is: The block number where your transaction's countdown starts
@@ -281,9 +317,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Implemented using:
 
-// rust
-// Copy
-// Edit
 // tokio::spawn(async move {
 //     loop {
 //         interval.tick().await;

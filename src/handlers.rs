@@ -152,11 +152,11 @@ pub async fn do_something_handler(
     State(state): State<AppState>,
     Json(payload): Json<DoSomethingRequest>,
 ) -> Result<Json<DoSomethingResponse>, StatusCode> {
-    log::info!(
-        "📥 Received do_something request with value: {} from signer: {:?}",
-        payload.value,
-        payload.signer
-    );
+    // 📥 LOG THE INCOMING REQUEST
+    log::info!("📥 INCOMING REQUEST:");
+    log::info!("   Raw payload: {:?}", payload);
+    log::info!("   Value: {}", payload.value);
+    log::info!("   Signer: {:?}", payload.signer);
 
     // Parse and validate the signer account
     // Default to Alice if no signer is provided in the request
@@ -280,6 +280,19 @@ pub async fn do_something_handler(
                         block_hash,
                         nonce
                     );
+
+                    let response = DoSomethingResponse {
+                        success: true, // or false based on result
+                        transaction_hash: Some(tx_hash.clone()),
+                        block_hash: Some(block_hash.clone()),
+                        error: None,
+                    };
+                    log::info!("📤 OUTGOING RESPONSE:");
+                    log::info!("   Success: {}", response.success);
+                    log::info!("   Transaction Hash: {:?}", response.transaction_hash);
+                    log::info!("   Block Hash: {:?}", response.block_hash);
+                    log::info!("   Error: {:?}", response.error);
+                    log::info!("   Full response: {:?}", response);
 
                     Ok(Json(DoSomethingResponse {
                         success: true,

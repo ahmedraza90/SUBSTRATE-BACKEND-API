@@ -53,8 +53,19 @@ pub struct DoSomethingResponse {
     pub transaction_hash: Option<String>,
     /// The block hash where the transaction was included (hex string)
     pub block_hash: Option<String>,
+    /// Detailed block header information where the transaction was included
+    pub block_header: Option<BlockHeaderInfo>,
     /// Error message if the transaction failed at any stage
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlockHeaderInfo {
+    pub parent_hash: String,
+    pub state_root: String,
+    pub extrinsics_root: String,
+    pub block_number: u32,
+    pub digest: String,
 }
 
 /// Response payload for the get_storage endpoint
@@ -160,8 +171,18 @@ pub async fn do_something_handler(
 
     // Parse and validate the signer account
     // Default to Alice if no signer is provided in the request
-    //This is a static method that converts a seed string into a cryptographic key pair for blockchain transactions.
     let signer_seed = payload.signer.unwrap_or_else(|| "//Alice".to_string());
+
+    //This is a static method that converts a seed string into a cryptographic key pair for blockchain transactions.
+
+    // Pair - The Key Pair Type
+    // What it is: A cryptographic key pair (public + private keys)
+
+    // from_string() - The Conversion Method
+    // What it does: Converts a human-readable string into actual cryptographic keys
+
+    // &signer_seed - The Input String
+
     let signer = match Pair::from_string(&signer_seed, None) {
         Ok(pair) => pair,
         Err(_) => {
@@ -170,10 +191,12 @@ pub async fn do_something_handler(
                 success: false,
                 transaction_hash: None,
                 block_hash: None,
+                block_header: None,
                 error: Some("Invalid signer".to_string()),
             }));
         }
     };
+
     // Keypair {
     //     secret: SecretKey,  ✅ Has private key for signing
     //     public: PublicKey,  ✅ Has public key for verification
@@ -196,6 +219,7 @@ pub async fn do_something_handler(
                 success: false,
                 transaction_hash: None,
                 block_hash: None,
+                block_header: None,
                 error: Some(format!("Failed to get nonce: {:?}", e)),
             }));
         }
@@ -225,6 +249,7 @@ pub async fn do_something_handler(
                     success: false,
                     transaction_hash: None,
                     block_hash: None,
+                    block_header: None,
                     error: Some(format!("Failed to create transaction: {:?}", e)),
                 }));
             }
@@ -269,37 +294,44 @@ pub async fn do_something_handler(
                     let tx_hash = format!("{:?}", events.extrinsic_hash());
 
                     // Get the hash of the block containing our transaction
-                    let block_hash = match state.client.blocks().at_latest().await {
-                        Ok(block) => format!("{:?}", block.hash()),
-                        Err(_) => "unknown".to_string(),
+                    let block = match state.client.blocks().at_latest().await {
+                        Ok(block) => block,
+                        Err(_) => {
+                            return Ok(Json(DoSomethingResponse {
+                                success: false,
+                                transaction_hash: None,
+                                block_hash: None,
+                                block_header: None,
+                                error: Some("Failed to fetch latest block".to_string()),
+                            }))
+                        }
                     };
 
-                    log::info!(
-                        "✅ Transaction successful: {} in block {} (nonce: {})",
-                        tx_hash,
-                        block_hash,
-                        nonce
-                    );
+                    let block_hash = format!("{:?}", block.hash());
+
+                    let block_header = BlockHeaderInfo {
+                        parent_hash: format!("{:?}", block.header().parent_hash),
+                        state_root: format!("{:?}", block.header().state_root),
+                        extrinsics_root: format!("{:?}", block.header().extrinsics_root),
+                        block_number: block.number(),
+                        digest: format!("{:?}", block.header().digest),
+                    };
 
                     let response = DoSomethingResponse {
                         success: true, // or false based on result
                         transaction_hash: Some(tx_hash.clone()),
                         block_hash: Some(block_hash.clone()),
+                        block_header: Some(block_header),
                         error: None,
                     };
                     log::info!("📤 OUTGOING RESPONSE:");
                     log::info!("   Success: {}", response.success);
                     log::info!("   Transaction Hash: {:?}", response.transaction_hash);
                     log::info!("   Block Hash: {:?}", response.block_hash);
+                    log::info!("   Block Header: {:?}", response.block_header);
                     log::info!("   Error: {:?}", response.error);
-                    log::info!("   Full response: {:?}", response);
 
-                    Ok(Json(DoSomethingResponse {
-                        success: true,
-                        transaction_hash: Some(tx_hash),
-                        block_hash: Some(block_hash),
-                        error: None,
-                    }))
+                    Ok(Json(response))
                 }
 
                 Err(e) => {
@@ -312,6 +344,7 @@ pub async fn do_something_handler(
                         success: false,
                         transaction_hash: None,
                         block_hash: None,
+                        block_header: None,
                         error: Some(format!("Transaction failed: {:?}", e)),
                     }))
                 }
@@ -327,6 +360,7 @@ pub async fn do_something_handler(
                 success: false,
                 transaction_hash: None,
                 block_hash: None,
+                block_header: None,
                 error: Some(format!("Failed to submit: {:?}", e)),
             }))
         }
@@ -570,3 +604,87 @@ pub async fn get_latest_events(
 
     Ok(Json(event_list))
 }
+
+// ## 📤 **OUTGOING RESPONSE BREAKDOWN**
+
+// ### **✅ Transaction Success**
+// ```
+// Success: true
+// ```
+// **Status**: Transaction completed successfully
+
+// ### **🔗 Transaction Hash**
+// ```
+// Transaction Hash: "0x0ed652e29a28c1280a02192bc8a93a97531c468579ec4ee0ea737e35e8641d6b"
+// ```
+// **What it is**: Unique identifier for this specific transaction
+// **Use**: Track this transaction, verify it happened, reference it later
+
+// ### **📦 Block Hash**
+// ```
+// Block Hash: "0x48fdd6042fb828006954b45741df297feec5ec43da3c16e6ca62ec708d78d2a2"
+// ```
+// **What it is**: Unique identifier of the block containing your transaction
+// **Use**: Verify which block contains your transaction
+
+// ### **🔍 Block Header Details** (New!)
+
+// #### **🔗 Parent Hash**
+// ```
+// parent_hash: "0xcdf282ac4c9d3ad10cc1d8d8508c7d030f214d9467c791669271f2393a82abca"
+// ```
+// **What it is**: Hash of the previous block (Block #926)
+// **Purpose**: Creates the blockchain "chain" - links to previous block
+
+// #### **🌳 State Root**
+// ```
+// state_root: "0x62ccaf894dbb7ac5c4f1daac79bbece7d7a688c6f3da9b27d5d71d1a6679b25b"
+// ```
+// **What it is**: **This is the hash of ALL blockchain state!**
+// **Contains**: All balances, storage, accounts, smart contracts - everything
+// **Changes**: Every time ANY state changes anywhere on the blockchain
+
+// #### **📋 Extrinsics Root**
+// ```
+// extrinsics_root: "0x57760c1b97bacf93be0cc2d398fa90ae117149a067d10ebd98703382c9472f5c"
+// ```
+// **What it is**: Hash of all transactions in THIS block
+// **Contains**: Your transaction + any other transactions in block #927
+
+// #### **📊 Block Number**
+// ```
+// block_number: 927
+// ```
+// **What it is**: Sequential block number (Genesis = 0, this is the 927th block)
+
+// #### **🔐 Digest (Consensus Data)**
+// ```
+// digest: "Digest {
+//   logs: [
+//     PreRuntime([97, 117, 114, 97], [114, 156, 115, 17, 0, 0, 0, 0]),
+//     Seal([97, 117, 114, 97], [192, 12, 65, 100, ...])
+//   ]
+// }"
+// ```
+
+// **What it contains**:
+// - **PreRuntime**: Aura consensus preparation data
+// - **Seal**: Cryptographic signature proving this block is valid
+// - **`[97, 117, 114, 97]`**: "aura" in ASCII (consensus engine name)
+
+// ## 🧠 **What This Tells You**
+
+// ### **Your Transaction Journey**:
+// ```
+// 1. 📥 Request: {"value": 123, "signer": "//Alice"}
+// 2. 🔐 Alice's keys generated and nonce obtained
+// 3. ✍️  Transaction signed with hash: 0x0ed652e2...
+// 4. 📤 Submitted to blockchain mempool
+// 5. 📦 Included in block #927 (hash: 0x48fdd604...)
+// 6. 🔗 Block #927 linked to previous block #926 (parent: 0xcdf282ac...)
+// 7. 🌳 Blockchain state updated (state_root: 0x62ccaf89...)
+// 8. ✅ Transaction finalized and permanent
+// ```
+
+// ### **State Root Significance**:
+// The **state_root** `0x62ccaf894d...` represents the **entire blockchain state** after your transaction. If you query this same state root later, you'll get the exact same blockchain state - proving immutability!

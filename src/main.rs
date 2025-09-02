@@ -283,7 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Requires .await
 
 // we have two threads here:
-// First for POST requests ✅
+// One for http requests ✅
 // Second is like a cron job syncing nonce from blockchain ✅
 
 // Both threads access the same nonce_cache

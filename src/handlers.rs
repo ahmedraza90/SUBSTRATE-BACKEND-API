@@ -688,3 +688,51 @@ pub async fn get_latest_events(
 
 // ### **State Root Significance**:
 // The **state_root** `0x62ccaf894d...` represents the **entire blockchain state** after your transaction. If you query this same state root later, you'll get the exact same blockchain state - proving immutability!
+
+// The digest is like a "validation stamp" on each block that contains proof the block was created correctly according to blockchain rules.
+
+// digest: "Digest {
+//   logs: [
+//     PreRuntime([97, 117, 114, 97], [114, 156, 115, 17, 0, 0, 0, 0]),
+//     Seal([97, 117, 114, 97], [192, 12, 65, 100, ...])
+//   ]
+// }"
+
+// 📋 Breaking Down Each Part
+// 1. The Numbers [97, 117, 114, 97]
+
+// [97, 117, 114, 97] = "aura" in ASCII
+
+// Conversion:
+
+// 97 = 'a'
+// 117 = 'u'
+// 114 = 'r'
+// 97 = 'a'
+
+// 2. PreRuntime Entry
+// PPreRuntime([97, 117, 114, 97], [114, 156, 115, 17, 0, 0, 0, 0])
+//         ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//         |                   |
+//         "aura"              Consensus preparation data
+
+// What this contains:
+
+// Engine ID: "aura" (which consensus algorithm)
+// Slot Data: [114, 156, 115, 17, 0, 0, 0, 0] (timing information)
+
+// 3. Seal Entry
+// Seal([97, 117, 114, 97], [192, 12, 65, 100, ...])
+//   ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+//   |                   |
+//   "aura"              Cryptographic signature
+
+// Like a notarized contract:
+// Document {
+//     content: "Alice sells house to Bob for $500k",  // ← Your transaction data
+//     notary_stamp: {
+//         notary_name: "aura",                        // ← Consensus algorithm
+//         preparation: "Document reviewed at 2:30pm", // ← PreRuntime
+//         signature: "John Smith [signature]"         // ← Seal
+//     }
+// }

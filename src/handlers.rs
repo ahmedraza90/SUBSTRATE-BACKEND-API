@@ -173,7 +173,8 @@ pub async fn do_something_handler(
     // Default to Alice if no signer is provided in the request
     let signer_seed = payload.signer.unwrap_or_else(|| "//Alice".to_string());
 
-    //This is a static method that converts a seed string into a cryptographic key pair for blockchain transactions.
+    // This is a static method that converts a seed string into a cryptographic key pair for blockchain
+    // transactions.
 
     // Pair - The Key Pair Type
     // What it is: A cryptographic key pair (public + private keys)
@@ -495,6 +496,29 @@ pub async fn get_storage_handler(
     }
 }
 
+// 📚 How Blockchain Events Work
+
+// Events Are Permanently Stored on the Blockchain
+
+// When a transaction happens at 3:00 PM:
+// 1. Transaction executes: do_something(42)
+// 2. Event gets emitted: SomethingStored { value: 42, who: Alice }
+// 3. Event gets PERMANENTLY stored in the block
+// 4. Block gets finalized and becomes immutable
+
+// The event is now FOREVER stored in that block!
+
+// 3:00 PM: Block #1000 created with your transaction
+// Block #1000 {
+//     transactions: [
+//         "Alice calls do_something(42)"
+//     ],
+//     events: [
+//         "SomethingStored: value=42, who=Alice"  // ← STORED FOREVER
+//     ],
+//     timestamp: "3:00 PM"
+// }
+
 /// Handles the /events endpoint for retrieving recent blockchain events
 ///
 /// This endpoint queries the latest finalized block for events emitted by
@@ -536,7 +560,6 @@ pub async fn get_latest_events(
         }
     };
 
-    // Retrieve all events that occurred in this block
     let events = match latest_block.events().await {
         Ok(events) => events,
         Err(e) => {
@@ -547,20 +570,10 @@ pub async fn get_latest_events(
 
     let mut event_list = Vec::new();
 
-    // for event in events.iter() {
-    // At this point:
-    // event: Result<EventDetails, Error>
-    // This could be Ok(actual_event_data) or Err(some_error)
-    // }
-
-    // if let Ok(event) = event {
-    //        ^^^^^    ^^^^^
-    //        |        |
-    //        |        └── Original variable (Result type)
-    //        └── NEW variable name (extracted EventDetails)
-    // }
-    // Iterate through all events in the block and filter for template pallet events
     for event in events.iter() {
+        // event could be:
+        // - Ok(EventDetails) ← Success case
+        // - Err(DecodeError) ← Failure case
         if let Ok(event) = event {
             // Attempt to parse this event as a SomethingStored event from the template pallet
             if let Ok(template_event) =
